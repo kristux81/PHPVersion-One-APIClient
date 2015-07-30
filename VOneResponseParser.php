@@ -1,6 +1,8 @@
 <?php
 
 require_once ('core.php');
+require_once ('XML2Array.php');
+
 
 /**
  * Version One Rest Response Xml Parser
@@ -10,12 +12,15 @@ class VersionOneResponseParser {
 	private $response ;
 	private $debug = false ;
 	private $error = false ; 
-
-	function setDebug(){
-		$this->debug = true ;
-	}
 	
-	function __construct( $xml, $post = false ){
+	
+	/**
+	 * constructor
+	 */
+	public function __construct( $xml, $post = false ){
+		global $g_vone_parser_debug ;
+		
+		$this->debug = $g_vone_parser_debug ;
 		
 		if( $post == true ){
 			$body_begin_pos = strpos ( $xml, "<?xml" );
@@ -30,7 +35,11 @@ class VersionOneResponseParser {
 			}
 		}
 		
-		$this->response = XML2Array::createArray ( $xml );
+		try{
+			$this->response = XML2Array::createArray ( $xml );
+		}catch (Exception $e){
+			$this->error = $xml ;
+		}
 		
 		// error handling for unauthorized access
 		if(isset($this->response['Error'])){
@@ -38,36 +47,27 @@ class VersionOneResponseParser {
 		}
 	}
 	
-	function __destruct(){
+	/**
+	 * destructor
+	 */
+	public function __destruct(){
 		$this->response = array();
 	}
-	
-	function getChildProjects() {
-		if (! empty ( $this->error )) {
-			return array( "error" => $this->error) ;
-		}
-		
-		$names = $this->response ['Asset'] ['Attribute'] ['Value'];
-		$ids = $this->response ['Asset'] ['Relation'] ['Asset'];
-		
-		$count = count ( $names );
-		$output = array ();
-		for($i = 0; $i < $count; $i ++) {
-			if (isset ( $ids [$i] )) {
-				// $pid = substr ( $ids[ $i ] ['@attributes'] ['idref'], strlen ( 'Scope:' ) );
-				$pid = $ids [$i] ['@attributes'] ['idref'];
-				$output [$pid] = $names [$i];
-			}
-		}
-		
-		if ($this->debug) {
-			log_event ( LOG_AJAX, print_r ( $output, true ) );
-		}
-		
-		return $output;
+
+	/**
+	 * debugger setting (for local override)
+	 * 
+	 * $debug = true / false 
+	 */
+	function setDebug( $debug=true ){
+		$this->debug = $debug ;
 	}
 	
-	function getValues( &$defect_detail, $defect_fields, $attributes ){
+	
+	/* ---- PRIVATE MEMBERS ----- */
+	
+	private function getAttributeValues( &$defect_detail, $defect_fields, $attributes ){
+		
 		foreach ( $defect_fields as $field_key => $field_value ) {
 			if ($attributes ['@attributes'] ['name'] == $field_value) {
 				if (isset ( $attributes ['@value'] )) {
@@ -80,50 +80,171 @@ class VersionOneResponseParser {
 		}
 	}
 	
-	function getDefectDetails( $defect_fields ) {
-		if (! empty ( $this->error )) {
-			return array( "error" => $this->error) ;
-		}
+	private function getRelationAttribs( &$defect_detail, $resource_fields, $relations ){
+		
+		foreach ( $resource_fields as $field_key => $field_value ) {
+			if ($relations ['@attributes'] ['name'] == $field_value) {
 	
-		$count =  $this->response ['Assets'] ['@attributes'] ['total'];
-		$defects = $this->response ['Assets'] ['Asset'] ;
-	
-		$defect_list = array();
-		for( $i = 0; $i < $count; $i ++) {
-			$defect_detail = array ();
-			
-			if($count == "1"){
-				$defect_attribs = $defects ['Attribute'];
-				$defect_relation = $defects ['Relation'];
-				$defect_detail ["id"] = substr ( $defects ['@attributes'] ['id'], strlen ( 'Defect:' ) );
-			}else {
-				$defect_attribs = $defects [$i] ['Attribute'];
-				$defect_relation = $defects [$i] ['Relation'];
-				$defect_detail ["id"] = substr ( $defects [$i] ['@attributes'] ['id'], strlen ( 'Defect:' ) );
+				$assets = $relations ['Asset'];
+				if (isset ( $assets [0] )) {
+					$t_asset_list = array ();
+					foreach ( $assets as $asset ) {
+						if (isset ( $asset ['@attributes'] ['idref'] )) {
+							$t_asset_list [] = $asset ['@attributes'] ['idref'];
+						}
+					}
+					$defect_detail [$field_key] = $t_asset_list;
+				} else {
+					if (isset ( $assets ['@attributes'] ['idref'] )) {
+						$defect_detail [$field_key] = $assets ['@attributes'] ['idref'];
+					}
+				}
+				break;
 			}
-			
-			// get project id
-			foreach ( $defect_relation as $relation ) {
-				if( isset( $relation ['@attributes']['idref'] )){
-					$defect_detail [ 'project_id' ] = $relation ['@attributes']['idref'] ;
-					break ;
+		}
+	}
+	
+	private function normalizeMemberArray( $member_list, $ccb_member_groups){
+		
+		$output = array ();
+		foreach ( $member_list as $key => $value ) {
+			$t_group = "";
+			$t_members = "";
+			foreach ( $value as $k => $v ) {
+				if (! is_array ( $v ) && in_array ( $v, $ccb_member_groups )) {
+					$t_group = $v;
+				} else {
+					$t_members = $v;
 				}
 			}
 			
-			// get all other attributes ( defect fields )
-			foreach ( $defect_attribs as $attrib ) {
-				$this->getValues( $defect_detail, $defect_fields, $attrib );
+			$output [$t_group] = $t_members;
+		}
+		
+		if ($this->debug) {
+			log_event ( LOG_AJAX, print_r ( $output, true ) );
+		}
+		
+		return $output;
+	}
+	
+	/* -------------- PUBLIC MEMBERS ----------- */
+	
+	/**
+	 * @return Array of Child projects
+	 */
+	public function getChildProjects() {
+		if (! empty ( $this->error )) {
+			return array( "error" => $this->error) ;
+		}
+		
+		$output = array ();
+		
+		$names = $this->response ['Asset'] ['Attribute'] ['Value'];
+		$ids = $this->response ['Asset'] ['Relation'] ['Asset'];
+		
+		$count = count ( $names );
+		if ($count == 1) {
+			$pid = $ids ['@attributes'] ['idref'];
+			$output [$pid] = $names;
+		} else {
+			for($i = 0; $i < $count; $i ++) {
+				if (isset ( $ids [$i] )) {
+					$pid = $ids [$i] ['@attributes'] ['idref'];
+					$output [$pid] = $names [$i];
+				}
+			}
+		}
+		
+		if ($this->debug) {
+			log_event ( LOG_AJAX, print_r ( $output, true ) );
+		}
+		
+		return $output;
+	}
+	
+	/**
+	 * 
+	 * @return Array of Defects with field values
+	 */
+	public function getDefectDetails( $defect_fields ) {
+		if (! empty ( $this->error )) {
+			return array (
+					"error" => $this->error 
+			);
+		}
+		
+		$count = $this->response ['Assets'] ['@attributes'] ['total'];
+		$defects = $this->response ['Assets'] ['Asset'];
+		
+		$defect_list = array ();
+		for($i = 0; $i < $count; $i ++) {
+			$defect_detail = array ();
+			
+			if ($count == "1") {
+				$defect_attribs = $defects ['Attribute'];
+				$defect_relation = $defects ['Relation'];
+				$t_id = $defects ['@attributes'] ['id'];
+			} else {
+				$defect_attribs = $defects [$i] ['Attribute'];
+				$defect_relation = $defects [$i] ['Relation'];
+				$t_id = $defects [$i] ['@attributes'] ['id'];
 			}
 			
-			$defect_list [ $defect_detail ["id"] ] = $defect_detail ;
-		}
-	
-		if ( $this->debug ) {
-			log_event ( LOG_AJAX, print_r( $defect_list, true) );
+			$defect_detail ["id"] = $t_id ;
+			
+			// get Attributes
+			foreach ( $defect_attribs as $attrib ) {
+				$this->getAttributeValues ( $defect_detail, $defect_fields, $attrib );
+			}
+				
+			// get Relations & Multi Relations
+			foreach ( $defect_relation as $relation ) {
+				$this->getRelationAttribs ( $defect_detail, $defect_fields, $relation );
+			}
+						
+			$defect_list [ $t_id ] = $defect_detail;
 		}
 		
-		return $defect_list ;
+		if ($this->debug) {
+			log_event ( LOG_AJAX, print_r ( $defect_list, true ) );
+		}
+		
+		return $defect_list;
 	}
 		
+	/**
+	 * 
+	 * @return Members by their CCB groups
+	 */
+	public function getMembersList( $member_fields, $ccb_member_groups ){
+		if (! empty ( $this->error )) {
+			return array (
+					"error" => $this->error 
+			);
+		}
+		
+		$count = $this->response ['Assets'] ['@attributes'] ['total'];
+		$members = $this->response ['Assets'] ['Asset'];
+		
+		$member_list = array ();
+		for($i = 0; $i < $count; $i ++) {
+			$member_detail = array ();
+			$member_attribs = $members [$i] ['Attribute'];
+			
+			// get Attributes
+			foreach ( $member_attribs as $attributes ) {
+				$this->getAttributeValues ( $member_detail, $member_fields, $attributes );
+			}
+			
+			$member_list [] = $member_detail;
+		}
+		
+		if ($this->debug) {
+			log_event ( LOG_AJAX, print_r ( $member_list, true ) );
+		}
+		
+		return $this->normalizeMemberArray ( $member_list, $ccb_member_groups );
+	}
+	
 }
-

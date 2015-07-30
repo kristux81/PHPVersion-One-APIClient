@@ -8,19 +8,16 @@ class VersionOneJsonResponseParser {
 	private $response ;
 	private $debug = false ;
 	private $error = false ; 
-
-	function setDebug(){
-		$this->debug = true ;
-	}
 	
-	function __construct( $json, $debug=false ){
+	function __construct( $json ){
+		global $g_vone_parser_debug ;
 		
 		if (preg_match ( '/(<html>)/', $json )) {
 			$this->error = $json;
 			return;
 		}
 		
-		$this->debug = $debug;
+		$this->debug = $g_vone_parser_debug;
 		
 		$fixed_json = preg_replace ( '/{}/', '"new stdClass()"', $json );
 		$this->response = json_decode ( $fixed_json, true );
@@ -34,8 +31,11 @@ class VersionOneJsonResponseParser {
 		$this->response = array();
 	}
 	
+	function setDebug( $debug=true ){
+		$this->debug = $debug ;
+	}
+	
 	function getFieldHistory( $field ){
-		
 		if (empty ( $this->response ) && $this->error != false) {
 			return array (
 					"error" => $this->error 

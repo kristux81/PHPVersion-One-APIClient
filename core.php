@@ -1,5 +1,7 @@
 <?php
 
+require_once ('path.php');
+
 /* This is like a linker file.
    Include it to include all other dependencies */
    

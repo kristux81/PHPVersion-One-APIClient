@@ -2,61 +2,8 @@
 
 require_once ('VOneResponseParser.php');
 require_once ('VOneJsonResponseParser.php');
-
-/**
- * Version One constants Class
- */
-abstract class VersionOneConstants {
-	
-	const CUSTOMER = "Customer" ;
-	
-	static $instances = array (	
-	      /* Your server address goes here */
-	);
-	
-	static $endpoints = array (
-			"xml"      => "rest-1.v1/Data/", // xml only no json
-			"json"     => "query.v1", // requires oauth2
-			"ui"       => "defect.mvc/Summary",
-			"activity" => "api/ActivityStream",
-	);
-	
-	static $resources = array (
-			"scope" => "Scope",
-			"defect"=> "Defect",
-	);
-	
-	static $attributes = array (
-			"name"          => "Name",
-			"parent"        => "Parent",
-			"state"         => "AssetState",
-	);
-	
-	static $state_values = array (
-			"open" => "64",
-			"closed" => "128"
-	);
-	
-	static $sort_order = array(
-			"A" => "",
-			"D" => "-"
-	);
-	
-	static $defect_fields = array(
-			"defect_id" => "Number",
-			"defect_summary" => "Name",
-			"defect_create_date" => "CreateDate",
-			"defect_change_date" => "ChangeDate",
-			"defect_status" => "Status.Name",
-			"defect_source" => "Source.Name",
-			"defect_assignee" => "Owners.Name",
-			"project_id" => "Scope.ID",
-			"project_name" => "Scope.Name",
-			"project_end_date" => "Scope.EndDate",
-	);
-	
-}
-
+require_once ('curl_api.php');
+require_once ('VOneConstants.php');
 
 
 /** 
@@ -96,12 +43,24 @@ class VersionOne {
 	
 	/* ---- PRIVATE MEMBERS ----- */
 	
+	private function getVOneUrl( $endPoint, $assetId ){
+		if(empty($assetId)){
+			return "";
+		}
+		
+		return $this->server_url . $this->vone_instance . $endPoint . "?oidToken=" . urlencode ( $assetId );
+	}
+	
 	private function getBaseUrl() {
 		return $this->server_url . $this->vone_instance . $this->end_point;
 	}
 	
 	private function getDefectActivityStream( $defectId ) {
 		return $this->server_url . $this->vone_instance . VersionOneConstants::$endpoints ['activity'] . "/Defect:" . $defectId;
+	}
+	
+	private function getMemberGroupUrl() {
+		return $this->getBaseUrl () . VersionOneConstants::$resources ['member_group'];
 	}
 	
 	private function getScopeUrl( $scopeId = null) {
@@ -167,55 +126,49 @@ class VersionOne {
 	}
 	
 	private function getQueryWhere( $attrib_array ) {
+		
+		$logic_op = VersionOneConstants::$logic_op ['and'];
 		$query = "where=";
 		foreach ( $attrib_array as $attrib_op => $keypair ) {
 			foreach ( $keypair as $attrib => $value ) {
-				$query .= $attrib . $attrib_op . $value . ";";
+				$query .= $attrib . $attrib_op . $value . $logic_op;
 			}
 		}
 		
-		return rtrim ( $query, ";" );
+		return rtrim ( $query, $logic_op );
+	}
+	
+	private function getQueryWhere2( $pairs ) {
+		
+		$logic_op = VersionOneConstants::$logic_op ['and'];
+		$query = "[";
+		foreach ( $pairs as $key => $val ) {
+			$query .= $key . "=" . urlencode ( "'" . $val . "'" ) . $logic_op;
+		}
+	
+		return rtrim ( $query, $logic_op ) . "]";
 	}
 	
 	private function getQueryLike( $like_array ) {
 		$query = "";
 		foreach ( $like_array as $findIn => $find ) {
-			$query .= "&find=" . urlencode ( $find ) . "&findin=" . VersionOneConstants::$defect_fields [$findIn];
+			$query .= "&find=" . urlencode ( $find ) 
+			       . "&findin=" . VersionOneConstants::$defect_fields [$findIn];
 		}
 		
 		return $query;
 	}
 	
-	private function getQueryWhereActive() {
-		$t_lbl_state = VersionOneConstants::$attributes ['state'];
-		$t_val_state = VersionOneConstants::$state_values ['open'];
+	private function getCCBMemberGroupsList( $ccb_member_groups ){
+		$attrib_lbl = VersionOneConstants::$member_fields ['group'];
+		$logic_op = VersionOneConstants::$logic_op ['or'];
 		
-		return "[" . $t_lbl_state . "=" . urlencode ( "'" . $t_val_state . "'" ) . "]";
-	}
-	
-	private function getQueryChildrenProjects( ) {
-		return "?sel=ChildrenMeAndDown";
-	}
-	
-	private function getPayload( $ccb_date, $note_content, $new_project_id){
-		$payload = "<Asset>";
-		if (! empty ( $ccb_date )) {
-			$t_date_field = VersionOneConstants::$defect_fields ['ccb_date'];
-			$payload .= "<Attribute name=\"$t_date_field\" act=\"set\">$ccb_date</Attribute>";
+		$filters = "";
+		foreach ( $ccb_member_groups as $ccb_group ) {
+			$filters .= $attrib_lbl . "=" . urlencode ( "'" . $ccb_group . "'" ) . $logic_op;
 		}
 		
-		if (! empty ( $note_content )) {
-			$t_note_field = VersionOneConstants::$defect_fields ['ccb_note'];
-			$payload .= "<Attribute name=\"$t_note_field\" act=\"set\">$note_content</Attribute>";
-		}
-		
-		if (! empty ( $new_project_id )) {
-			$payload .= "<Relation name=\"Scope\" act=\"set\"><Asset idref=\"$new_project_id\" /></Relation>";
-		}
-		
-		$payload .= "</Asset>";
-		
-		return $payload;
+		return rtrim ( $filters, $logic_op );
 	}
 	
 	
@@ -226,7 +179,7 @@ class VersionOne {
 	 * 
 	 * @param $op : comparision operator
 	 * @param $field : name of field
-	 * @param $date : date value ( yy-mm-dd )
+	 * @param $date : date value ( dd-mm-yy )
 	 * @return filter array (for building query ) with operator 
 	 */
 	public static function date2TimeStampFilter($op, $field, $date){
@@ -266,55 +219,110 @@ class VersionOne {
 	/**
 	 * Get Defect Url to display a defect in Browser
 	 * 
-	 * Query : {server instance}/defect.mvc/Summary?oidToken=Defect%3A{defect id}
+	 * Url : https://www9.v1host.com/AxwaySandbox/defect.mvc/Summary?oidToken=Defect%3A{defect id}
 	 */
-	public static function getVOneDefectUrl( $defectId ){
-		global $g_vone_server_url, $g_vone_use_instance ;
+	public function getVOneDefectUrl( $defectId ){
+		return $this->getVOneUrl( VersionOneConstants::$endpoints ['defect-ui'], $defectId);
+	}
 	
-		$base_uri = $g_vone_server_url .
-					VersionOneConstants::$instances [ $g_vone_use_instance ] .
-					VersionOneConstants::$endpoints ['ui'];
-		$query = "?oidToken=Defect%3A";
+	/**
+	 * Get Project Url to display a defect in Browser
+	 * 
+	 * Url : https://www9.v1host.com/AxwaySandbox/Project.mvc/Summary?oidToken=Scope%3A{scope_id}
+	 */
+	public function getVOneProjectUrl( $scopeId ){
+		return $this->getVOneUrl( VersionOneConstants::$endpoints ['project-ui'], $scopeId);
+	}
 	
-		return $base_uri . $query . $defectId ;
+	/**
+	 * Get Goal Url to display a defect in Browser
+	 *
+	 * Url : https://www9.v1host.com/AxwaySandbox/Goal.mvc/Summary?oidToken=Goal%3A{goal_id}
+	 */
+	public function getVOneGoalUrl( $goalId ){
+		return $this->getVOneUrl( VersionOneConstants::$endpoints ['goal-ui'], $goalId);
+	}
+	
+	/**
+	 * search given member in member groups
+	 * 
+	 * Url : https://www9.v1host.com/AxwaySandbox/rest-1.v1/Data/MemberLabel?
+	 *       sel=Name,Members.Nickname,Members&where=Name=%27CCB%20participants%27|Name=%27CCB%20admins%27
+	 */
+	function getMembersByGroups( $ccb_member_groups ){
+		
+		$select = array_values ( VersionOneConstants::$member_fields );	
+		$request = $this->getMemberGroupUrl () 
+		          . $this->getQuerySelect ( $select )
+		          . "where=" . $this->getCCBMemberGroupsList ( $ccb_member_groups );
+		
+		$curl_handle = new curlSession ( $request );
+		$response = $curl_handle->get ();
+		
+		$parser = new VersionOneResponseParser ( $response );		
+		return $parser->getMembersList ( VersionOneConstants::$member_fields, $ccb_member_groups );
 	}
 	
 	/**
 	 * get all open projects
 	 *
-	 * Query : {server instance}/rest-1.v1/Data/Scope?sel=Name,Parent&where=AssetState=%2764%27
+	 * Query : https://www9.v1host.com/AxwaySandbox/rest-1.v1/Data/Scope?sel=Name,Parent&where=AssetState=%2764%27
 	 */
 	function getAllOpenProjects() {
 		
-		$select = array (
-				VersionOneConstants::$attributes ['name'],
-				VersionOneConstants::$attributes ['parent'] 
-		);
-		
+		$select = array_values(VersionOneConstants::$scope_fields);
 		$request = $this->getScopeUrl () . $this->getQuerySelect ( $select ) .
-		           $this->getQueryWhere ( self::$active_state );
+		           $this->getQueryWhere ( array("=" => self::$active_state) );
 		$curl_handle = new curlSession( $request );
 		
+		// debug turned off to avoid flooding of log files
+		$curl_handle->setDebug(false);
+		
 		return $curl_handle->get() ;
+	}
+	
+	/**
+	 * get all open goals against the project
+	 *
+	 * Query : https://www9.v1host.com/AxwaySandbox/rest-1.v1/Data/Scope/{scopeId}
+	 *         ?sel=Goals[Category.Name=%27Sustaining%27;AssetState=%2764%27]
+	 */
+	function getAllOpenGoals( $scope ) {
+		$where = array (
+				VersionOneConstants::$attributes ['state'] => VersionOneConstants::$state_values ['open'],
+				VersionOneConstants::$goal_fields ['category'] => VersionOneConstants::$goal_cat ['sustaining'] 
+		);
+		
+		$scopeId = substr ( $scope, strlen ( 'Scope:' ) );
+		$request = $this->getScopeUrl ( $scopeId ) . "?sel=Goals" . $this->getQueryWhere2 ( $where );
+		$curl_handle = new curlSession ( $request );
+		
+		return $curl_handle->get ();
 	}
 		
 	/**
 	 * get all open child projects for a given parent project
 	 *
-	 * Query : {server instance}/rest-1.v1/Data/Scope/{scopeId}?sel=ChildrenMeAndDown[AssetState=%2764%27]
+	 * Query : https://www9.v1host.com/AxwaySandbox/rest-1.v1/Data/Scope/{scopeId}
+	 *         ?sel=ChildrenMeAndDown[AssetState=%2764%27]
 	 */
 	function getAllOpenChildProjects( $projectId ) {
-		
+		$active_state = array (
+				VersionOneConstants::$attributes ['state'] => VersionOneConstants::$state_values ['open'] 
+		);
+
 		$request = $this->getScopeUrl ( $projectId ) 
-		     . $this->getQueryChildrenProjects()
-		     . $this->getQueryWhereActive();
+		         . "?sel=ChildrenMeAndDown" . $this->getQueryWhere2 ( $active_state );
 		
-		$curl_handle = new curlSession( $request );
-		$response = $curl_handle->get() ;
+		$curl_handle = new curlSession ( $request );
+		$response = $curl_handle->get ();
 		
-        $parser = new VersionOneResponseParser( $response );
-        		
-		return $parser->getChildProjects();
+		$parser = new VersionOneResponseParser ( $response );
+		
+		// debug turned off to avoid flooding of log files
+		$parser->setDebug(false);
+		
+		return $parser->getChildProjects ();
 	}
 	
 	
@@ -324,13 +332,13 @@ class VersionOne {
 	 * Queries : 
 	 * 
 	 * (1) Single project (scope.Name)
-	 *     {server instance}/rest-1.v1/Data/Defect?sel=Number,Name,CreateDate,ChangeDate,
+	 *     https://www9.v1host.com/AxwaySandbox/rest-1.v1/Data/Defect?sel=Number,Name,CreateDate,ChangeDate,
 	 *     Status.Name,Source.Name,Custom_Rating6,Owners.Name,Custom_OS,Custom_Platform,Scope.Name,Scope.EndDate,
 	 *     Custom_PeoplesoftId,Custom_CaseId,Custom_AlertLevel.Name,Custom_CustomerName2
 	 *     &where=Scope.Name=%27{Project_name}%27;Source.Name=%27Customer%27;AssetState=%2764%27
 	 *     
 	 * (2) Multi projects
-	 *     {server instance}/rest-1.v1/Data/Defect?sel=Number,Name,CreateDate,ChangeDate,
+	 *     https://www9.v1host.com/AxwaySandbox/rest-1.v1/Data/Defect?sel=Number,Name,CreateDate,ChangeDate,
 	 *     Status.Name,Source.Name,Custom_Rating6,Owners.Name,Custom_OS,Custom_Platform,Scope.Name,Scope.EndDate,
 	 *     Custom_PeoplesoftId,Custom_CaseId,Custom_AlertLevel.Name,Custom_CustomerName2
 	 *     &where=Scope.Name=%27{Project_name_1}%27,%27{Project_name_2}%27,%27{Project_name_3}%27
@@ -339,37 +347,45 @@ class VersionOne {
 	 */
 	function getCustomerDefectsByProject( $selected_filters ) {
 			
-		// user filters
+			// user filters
 		$p_project_id = $selected_filters ['projects'];
 		$where_filter = $selected_filters ['where'];
 		$show_closed = $selected_filters ['closed'];
 		$sort = $selected_filters ['sort'] ['by'];
 		$sort_oder = $selected_filters ['sort'] ['order'];
 		
-		$t_defect_fields = VersionOneConstants::$defect_fields ;
+		$t_defect_fields = VersionOneConstants::$defect_fields;
 		
 		// attributes for "?sel="
-		$select = array_values ( $t_defect_fields ) ;
-			
+		$select = array_values ( $t_defect_fields );
+		
 		// default minimum filters
 		$where = array (
-				$t_defect_fields ['project_id'] => $this->getQueryEncodedList( $p_project_id ),
-				$t_defect_fields ['defect_source'] => $this->getQueryEncodedList( VersionOneConstants::CUSTOMER),
+				$t_defect_fields ['defect_source'] => $this->getQueryEncodedList ( VersionOneConstants::CUSTOMER ) 
 		);
 		
-		if($show_closed){
-			$where += self::$all_state ;
-		}else {
-			$where += self::$active_state ;
+		// set project filter only if non empty project list
+		if (! empty ( $p_project_id )) {
+			$where += array (
+					$t_defect_fields ['project_id'] => $this->getQueryEncodedList ( $p_project_id ) 
+			);
+		}
+		
+		if ($show_closed) {
+			$where += self::$all_state;
+		} else {
+			$where += self::$active_state;
 		}
 		
 		// filters till this point must be applied with comparision operator "="
-		$where = array("=" => $where);
+		$where = array (
+				"=" => $where 
+		);
 		
 		// user selected additional filters
-		foreach ($where_filter as $filter_op => $filters ) {
+		foreach ( $where_filter as $filter_op => $filters ) {
 			if (is_array ( $filters ) && count ( $filters ) > 0) {
-					
+				
 				// skip like filter at this stage
 				if ($filter_op == "like")
 					continue;
@@ -386,42 +402,42 @@ class VersionOne {
 				}
 			}
 		}
-
-		$request = $this->getDefectUrl () 
-		           . $this->getQuerySelect ( $select ) 
-		           . $this->getQueryWhere ( $where )
-		           . $this->getQueryLike( $where_filter['like'] )
-		           . $this->getQuerySort( $sort, $sort_oder ) ;
 		
-		$curl_handle = new curlSession( $request );
-		$response = $curl_handle->get() ;
+		$request = $this->getDefectUrl () 
+		         . $this->getQuerySelect ( $select ) 
+		         . $this->getQueryWhere ( $where ) 
+		         . $this->getQueryLike ( $where_filter ['like'] ) 
+		         . $this->getQuerySort ( $sort, $sort_oder );
+		
+		$curl_handle = new curlSession ( $request );
+		$response = $curl_handle->get ();
 		
 		$parser = new VersionOneResponseParser ( $response );
-		
-		// debug mode
-		$parser->setDebug();
-		
 		return $parser->getDefectDetails ( $t_defect_fields );
 	}
 		
 	/**
 	 * Get all CCB Notes per defect from Activity Stream End Point
 	 * 
-	 * Query : {server instance}/api/ActivityStream/Defect:{defect id}
-	 * OR      {server instance}/api/ActivityStream/Defect:{defect id}?anchorDate={time-stamp}
+	 * Query : https://www9.v1host.com/AxwaySandbox/api/ActivityStream/Defect:{defect id}
+	 * OR      https://www9.v1host.com/AxwaySandbox/api/ActivityStream/Defect:{defect id}?anchorDate={time-stamp}
 	 * 
 	 * Example time-stamp = 2015-05-18T08%3A11%3A48.45Z 
 	 * 
 	 */ 
-	function getHistory( $defectId ){
+	function getAllNotes( $defectId ){
 	
 		$request = $this->getDefectActivityStream( $defectId );
 	
 		$curl_handle = new curlSession ( $request );
 		$response = $curl_handle->get();
 		
-		$parser = new VersionOneJsonResponseParser( $response, true);
-		return $parser->getFieldHistory( VersionOneConstants::$defect_fields['defect_status'] );
+		$parser = new VersionOneJsonResponseParser( $response );
+		
+		// debug turned off to avoid flooding of log files
+		$parser->setDebug(false);
+		
+		return $parser->getFieldHistory( VersionOneConstants::$defect_fields['note'] );
 	}
 	
 }

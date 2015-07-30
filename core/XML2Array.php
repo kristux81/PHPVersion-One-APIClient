@@ -34,9 +34,17 @@ class XML2Array {
     public static function &createArray($input_xml) {
         $xml = self::getXMLRoot();
 		if(is_string($input_xml)) {
-			$parsed = $xml->loadXML($input_xml);
-			if(!$parsed) {
-				throw new Exception('[XML2Array] Error parsing the XML string.');
+			libxml_use_internal_errors ( true );
+			
+			$parsed = $xml->loadXML ( $input_xml );
+			
+			$errors = libxml_get_errors ();
+			libxml_clear_errors ();
+			
+			log_event ( LOG_AJAX, print_r ( $errors, true ) );
+			
+			if (! $parsed || ! empty ( $errors )) {
+				throw new Exception ( '[XML2Array] Error parsing the XML string.' );
 			}
 		} else {
 			if(get_class($input_xml) != 'DOMDocument') {
